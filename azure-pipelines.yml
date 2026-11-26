@@ -1,0 +1,153 @@
+# ============================================================
+# React Static Website Deployment to Azure Blob Storage
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+
+# Microsoft-hosted Azure DevOps agent
+pool:
+  vmImage: 'ubuntu-latest'
+
+# ------------------------------------------------------------
+# Variables
+# ------------------------------------------------------------
+variables:
+  nodeVersion: '20.x'
+
+  # Change this to your Azure Storage Account name
+  storageAccountName: 'sahilstorageweb01'
+
+  # React build output directory
+  buildDirectory: 'build'
+
+# ============================================================
+# STAGE 1 - BUILD
+# ============================================================
+
+stages:
+
+- stage: Build
+  displayName: 'Build React Application'
+
+  jobs:
+
+  - job: BuildReact
+    displayName: 'Install and Build React App'
+
+    steps:
+
+    # --------------------------------------------------------
+    # Checkout source code from Azure Repo
+    # --------------------------------------------------------
+    - checkout: self
+      displayName: 'Checkout Source Code'
+
+    # --------------------------------------------------------
+    # Install Node.js
+    # --------------------------------------------------------
+    - task: NodeTool@0
+      displayName: 'Install Node.js'
+      inputs:
+        versionSpec: '$(nodeVersion)'
+
+    # --------------------------------------------------------
+    # Install npm dependencies
+    # --------------------------------------------------------
+    - script: |
+        npm ci
+      displayName: 'Install Dependencies'
+
+    # --------------------------------------------------------
+    # Build React application
+    # --------------------------------------------------------
+    - script: |
+        npm run build
+      displayName: 'Build React Application'
+
+    # --------------------------------------------------------
+    # Publish build output as Azure DevOps artifact
+    # --------------------------------------------------------
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Build Artifact'
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/$(buildDirectory)'
+        artifact: 'react-build'
+        publishLocation: 'pipeline'
+
+
+# ============================================================
+# STAGE 2 - DEPLOY
+# ============================================================
+
+- stage: Deploy
+  displayName: 'Deploy Website to Azure Blob Storage'
+
+  dependsOn: Build
+
+  condition: succeeded()
+
+  jobs:
+
+  - job: DeployBlob
+    displayName: 'Deploy to Azure Storage'
+
+    steps:
+
+    # --------------------------------------------------------
+    # Download artifact created in Build stage
+    # --------------------------------------------------------
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Build Artifact'
+      inputs:
+        artifact: 'react-build'
+        path: '$(Pipeline.Workspace)/react-build'
+
+    # --------------------------------------------------------
+    # Upload website to Azure Blob Storage $web container
+    # --------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Upload Website to Azure Blob Storage'
+      inputs:
+
+        # Change this to your Azure DevOps Service Connection
+        azureSubscription: 'Azure-Service-Connection'
+
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+
+        inlineScript: |
+
+          echo "Starting deployment..."
+
+          az storage blob upload-batch \
+            --account-name $(storageAccountName) \
+            --auth-mode login \
+            --destination '$web' \
+            --source "$(Pipeline.Workspace)/react-build" \
+            --overwrite
+
+          echo "Deployment completed successfully."
+
+    # --------------------------------------------------------
+    # Display Azure Static Website URL
+    # --------------------------------------------------------
+    - task: AzureCLI@2
+      displayName: 'Get Static Website URL'
+      inputs:
+
+        azureSubscription: 'Azure-Service-Connection'
+
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+
+        inlineScript: |
+
+          echo "Static Website Endpoint:"
+
+          az storage account show \
+            --name $(storageAccountName) \
+            --query "primaryEndpoints.web" \
+            --output tsv
